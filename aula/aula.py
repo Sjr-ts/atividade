@@ -1,93 +1,92 @@
 import cv2
-import time
+import numpy as np
 
-VIDEO_PATH = r"media\race.mp4"
-cap = cv2.VideoCapture(VIDEO_PATH)
-if not cap.isOpened():
-    raise FileNotFoundError(f"Não foi possível carregar o vídeo: {VIDEO_PATH}")
+# Canvas size
+WIDTH, HEIGHT = 960, 540
 
-# Obter FPS do vídeo
-video_fps = cap.get(cv2.CAP_PROP_FPS)
-if video_fps == 0:
-    video_fps = 30  # fallback
-delay = int(1000 / video_fps)
+# Create white canvas
+canvas = np.ones((HEIGHT, WIDTH, 3), dtype=np.uint8) * 255
 
-# Ler o primeiro frame
-ok, frame = cap.read()
-if not ok or frame is None or frame.size == 0:
-    cap.release()
-    cv2.destroyAllWindows()
-    raise RuntimeError("Falha ao carregar o primeiro frame do vídeo.")
+# Initial settings
+mode = "line"      # Default drawing mode
+drawing = False    # Indicates if mouse left button is pressed
+start_pt = None    # Starting point of drawing
+curr_pt = None     # Current mouse point (for preview)
 
-# Converter para BGR se estiver em grayscale
-if len(frame.shape) == 2:
-    frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
 
-# --- Função para selecionar ROI válida ---
-def get_valid_roi(window_name, frame):
-    while True:
-        roi = cv2.selectROI(window_name, frame, fromCenter=False, showCrosshair=True)
-        cv2.destroyWindow(window_name)
-        if roi != (0, 0, 0, 0):
-            x, y, w, h = map(int, roi)
-            if x >= 0 and y >= 0 and x + w <= frame.shape[1] and y + h <= frame.shape[0]:
-                return roi
-            else:
-                print("⚠ ROI fora da área do frame. Tente novamente.")
-        else:
-            print("⚠ Nenhuma ROI válida foi selecionada. Tente novamente.")
+def put_help(img):
+    """Draws a help bar with shortcuts on top of the image."""
+    txt = "Teclas: [1]Linha [2]Ret [3]Circ [4]Livre | [c] limpar [s] salvar [ESC] sair"
+    cv2.rectangle(img, (0, 0), (WIDTH, 30), (240, 240, 240), -1)
+    cv2.putText(img, txt, (10, 20),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1, cv2.LINE_AA)
 
-roi = get_valid_roi("Selecione a área (ROI) e pressione ENTER/ESPAÇO", frame)
 
-def create_kcf():
-    if hasattr(cv2, "legacy") and hasattr(cv2.legacy, "TrackerKCF_create"):
-        return cv2.legacy.TrackerKCF_create()
-    if hasattr(cv2, "TrackerKCF_create"):
-        return cv2.TrackerKCF_create()
-    raise RuntimeError("KCF Tracker não disponível. Instale opencv-contrib-python.")
+def mouse_cb(event, x, y, flags, param):
+    """Controls drawing with the mouse."""
+    global drawing, start_pt, curr_pt, canvas, mode
 
-tracker = create_kcf()
-ok_init = tracker.init(frame, roi)
-if not ok_init:
-    cap.release()
-    cv2.destroyAllWindows()
-    raise RuntimeError("Falha ao inicializar o tracker com a ROI.")
+    if event == cv2.EVENT_LBUTTONDOWN:
+        drawing = True
+        start_pt = (x, y)
+        curr_pt = (x, y)
 
-# --- Loop de tracking ---
+    elif event == cv2.EVENT_MOUSEMOVE:
+        curr_pt = (x, y)
+        if drawing and mode == "free":
+            cv2.line(canvas, start_pt, curr_pt, (50, 50, 50), 2)
+            start_pt = curr_pt  # update for continuous line
+
+    elif event == cv2.EVENT_LBUTTONUP:
+        drawing = False
+        if mode == "line":
+            cv2.line(canvas, start_pt, (x, y), (0, 0, 255), 2)
+        elif mode == "rect":
+            cv2.rectangle(canvas, start_pt, (x, y), (0, 128, 255), 2)
+        elif mode == "circle":
+            r = int(((x - start_pt[0])**2 + (y - start_pt[1])**2)**0.5)
+            cv2.circle(canvas, start_pt, r, (0, 255, 0), 2)
+
+
+# Create window and set mouse callback
+cv2.namedWindow("Canvas", cv2.WINDOW_AUTOSIZE)
+cv2.setMouseCallback("Canvas", mouse_cb)
+
+# Main loop
 while True:
-    ok, frame = cap.read()
-    if not ok or frame is None or frame.size == 0:
+    display = canvas.copy()
+
+    # Preview drawing (line, rect, circle)
+    if drawing and mode in ("line", "rect", "circle") and start_pt and curr_pt:
+        if mode == "line":
+            cv2.line(display, start_pt, curr_pt, (0, 0, 255), 1)
+        elif mode == "rect":
+            cv2.rectangle(display, start_pt, curr_pt, (0, 128, 255), 1)
+        elif mode == "circle":
+            r = int(((curr_pt[0] - start_pt[0])**2 +
+                     (curr_pt[1] - start_pt[1])**2)**0.5)
+            cv2.circle(display, start_pt, r, (0, 255, 0), 1)
+
+    # Show help bar
+    put_help(display)
+    cv2.imshow("Canvas", display)
+
+    # Keyboard events
+    k = cv2.waitKey(20) & 0xFF
+    if k == 27:  # ESC
         break
+    elif k == ord('c'):
+        canvas[:] = 255
+    elif k == ord('s'):
+        cv2.imwrite("canvas_saida.png", canvas)
+        print("Imagem salva em canvas_saida.png")
+    elif k == ord('1'):
+        mode = "line"
+    elif k == ord('2'):
+        mode = "rect"
+    elif k == ord('3'):
+        mode = "circle"
+    elif k == ord('4'):
+        mode = "free"
 
-    if len(frame.shape) == 2:
-        frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-
-    t0 = time.time()
-    ok, box = tracker.update(frame)
-    fps = 1.0 / max(time.time() - t0, 1e-6)
-
-    if ok:
-        x, y, w, h = map(int, box)
-        cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 0, 0), 2)
-        status_txt = "OK"
-    else:
-        status_txt = "FALHOU"
-        cv2.putText(frame, "Perda de tracking - pressione 'r' para redefinir ROI",
-                    (20, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-
-    cv2.putText(frame, f"KCF | FPS: {int(fps)} | {status_txt}", (20, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (50, 200, 50), 2)
-
-    cv2.imshow("KCF Tracking (ESC/Q sai | R redefine ROI)", frame)
-    key = cv2.waitKey(delay) & 0xFF  # usar delay baseado no FPS do vídeo
-
-    if key in (27, ord('q')):
-        break
-
-    if key == ord('r'):
-        new_roi = get_valid_roi("Redefinir ROI (ENTER/ESPAÇO confirma, ESC cancela)", frame)
-        tracker = create_kcf()
-        tracker.init(frame, new_roi)
-
-cap.release()
 cv2.destroyAllWindows()
